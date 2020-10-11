@@ -1,11 +1,10 @@
-import time
+import time, operator, re
 from typing import Tuple
 from warnings import warn
+from functools import reduce
 from numpy import math
 import tensorflow as tf
 from tensorflow.keras import layers, models, optimizers, metrics, datasets, backend, losses
-import operator
-from functools import reduce
 MB=1024**2
 GB=1024**3
 class GPU_Ram: TeslaK80_1Proc= 12*GB; TeslaV100=16*GB; TeslaP100=16*GB; TeslaM60=16*GB; NoGPU=128*MB
