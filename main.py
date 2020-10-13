@@ -87,13 +87,27 @@ def max_batch_size(gpu_ram_bytes:int,
     return best_size
 
 
-def decay(current_step, num_steps, start, end=1, curve='linear'):
+def decay_pow2(current_step, num_steps, start, end=1, curve='exponential'):
+    """
+    Decay from start to end, rounding to powers of two
+    :param current_step: we expect current_step between 0 and num_steps
+    :param num_steps:
+    :param start: The value wanted when current_step==0
+    :param end: default to 1. The value wanted when current_step==num_steps
+    :param curve: linear or exponential
+    :return: a power of 2 representing the fraction current_step/num_steps of the way from
+    start to end along the given curve
+    """
+    linear_fraction=current_step/num_steps
     if curve=='exponential':
-        return start * 2**progress + end * 2**(1-progress)
+        log2end=math.log2(end)
+        log2start=math.log2(start)
+        progress= log2end * (1 - linear_fraction) + log2start * linear_fraction
+        exp= log2start -log2end - progress
+        return max(1, 2**int(exp))
     else:
-        progress=current_step/num_steps
-        linear=start * (1 - progress) + end * progress
-        return max(1,2**int(math.log2(linear)))
+        linear=start * (1 - linear_fraction) + end * linear_fraction
+        return 0 if linear==0 else 2**int(0.5 + math.log2(linear))
 
 def train_and_eval(model: models.Model,
                    ds_train: tf.data.Dataset, ds_val: tf.data.Dataset,
@@ -109,7 +123,7 @@ def train_and_eval(model: models.Model,
     for i in range(1, 1+epochs//eval_every_n_epochs):
         start=time.time()
         epoch=1+(i-1)*eval_every_n_epochs
-        batch_size=decay(epoch-1, epochs, max_batch_size)
+        batch_size=decay_pow2(epoch - 1, epochs, max_batch_size)
         ds_batch=ds_train.batch(batch_size)
         epochs_descr='Epochs {}-{} batch size {} '.format(epoch,epoch+eval_every_n_epochs-1, batch_size)
         print(epochs_descr)
@@ -119,8 +133,6 @@ def train_and_eval(model: models.Model,
         print(epochs_descr,'took {:.1f}sec. Validation loss= {:.2f}, Validation Accuracy= {}%'\
                 .format(time.time()-start, val_loss,int(val_accuracy*100)))
 
-
-def prod(iterable): return reduce(operator.mul, iterable)
 
 def warnif(condition:bool, message:str, **kwargs):
     if condition: warn(message,**kwargs)
