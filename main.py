@@ -1,16 +1,19 @@
-import time, operator, re
-from typing import Tuple
+import time, operator, subprocess
+from collections import namedtuple
+from typing import Tuple, List, NamedTuple, Dict
 from warnings import warn
 from functools import reduce
 from numpy import math
 import tensorflow as tf
 from tensorflow.keras import layers, models, optimizers, metrics, datasets, backend, losses
+from tensorflow.python.keras.callbacks import History
+
 MB=1024**2
 GB=1024**3
 class GPU_Ram: TeslaK80_1Proc= 12*GB; TeslaV100=16*GB; TeslaP100=16*GB; TeslaM60=16*GB; NoGPU=128*MB
 
 
-def main(gpu_ram= GPU_Ram.TeslaK80_1Proc ):
+def main(gpu_ram= GPU_Ram.TeslaK80_1Proc, epochs=20 ):
 
     mnist_4Dense_net= models.Sequential([
             layers.Reshape(target_shape= (28*28,),input_shape=(28, 28)),
@@ -21,8 +24,29 @@ def main(gpu_ram= GPU_Ram.TeslaK80_1Proc ):
     mnist_4Dense_net.summary()
     ds_train,ds_val=create_mnist_datasets()
     best_batch_size=max_batch_size(gpu_ram,mnist_4Dense_net,default_max=64)
-    train_and_eval(mnist_4Dense_net, ds_train, ds_val, max_batch_size=best_batch_size)
-    return mnist_4Dense_net
+    run_result= train_and_eval(mnist_4Dense_net,
+                               ds_train, ds_val,
+                               epochs=epochs,
+                               max_batch_size=best_batch_size)
+    print(run_result)
+    return (mnist_4Dense_net, run_result)
+
+
+class EpochsSliceResult(NamedTuple):
+    index:int
+    num_epochs:int
+    time_secs:int
+    loss:float
+    accuracy:float
+    metrics: Dict[str, float]
+
+class RunResults(List[EpochsSliceResult]):
+    def num_epochs(self)->int       : return sum([e.num_epochs for e in self])
+    def total_time(self)->float     : return sum([e.time_secs for e in self])
+    def final_loss(self)->float     : return self[-1].loss
+    def final_accuracy(self)->float : return self[-1].accuracy
+    def final_metrics(self)->Dict[str, float] : return self[-1].metrics
+
 
 
 @tf.function
@@ -119,6 +143,11 @@ def train_and_eval(model: models.Model,
             optimizers.Adam(),
             loss=losses.SparseCategoricalCrossentropy(from_logits=True),
             metrics=[metrics.SparseCategoricalAccuracy()])
+    try: subprocess.run('nvidia-smi')
+    except Exception: pass
+
+    run_result= RunResults()
+
     print('training...')
     for i in range(1, 1+epochs//eval_every_n_epochs):
         start=time.time()
@@ -127,15 +156,26 @@ def train_and_eval(model: models.Model,
         ds_batch=ds_train.batch(batch_size)
         epochs_descr='Epochs {}-{} batch size {} '.format(epoch,epoch+eval_every_n_epochs-1, batch_size)
         print(epochs_descr)
-        model.fit(ds_batch, epochs=eval_every_n_epochs)
+        history=model.fit(ds_batch,
+                 epochs=eval_every_n_epochs,
+                 validation_data=ds_val.batch(batch_size),
+                 validation_freq=eval_every_n_epochs)
         tf.keras.models.save_model(model,save_to_path)
         val_loss,val_accuracy= model.evaluate(ds_val.batch(batch_size))
-        print(epochs_descr,'took {:.1f}sec. Validation loss= {:.2f}, Validation Accuracy= {}%'\
-                .format(time.time()-start, val_loss,int(val_accuracy*100)))
-
+        epochs_slice_time = time.time() - start
+        print(epochs_descr,'took {:.1f}sec. Validation loss= {:.2f}, Validation Accuracy= {}%' \
+              .format(epochs_slice_time, val_loss, int(val_accuracy * 100)))
+        epoch_result=EpochsSliceResult(i,
+                                       eval_every_n_epochs,
+                                       epochs_slice_time,
+                                       val_loss,
+                                       val_accuracy,
+                                       history.history)
+        run_result.append(epoch_result)
+        return (model,run_result)
 
 def warnif(condition:bool, message:str, **kwargs):
     if condition: warn(message,**kwargs)
 
 if __name__ == '__main__':
-    model=main()
+    model,run_result=main()
