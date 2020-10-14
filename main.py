@@ -1,19 +1,34 @@
 import time, operator, subprocess
-from collections import namedtuple
 from typing import Tuple, List, NamedTuple, Dict
 from warnings import warn
 from functools import reduce
 from numpy import math
 import tensorflow as tf
 from tensorflow.keras import layers, models, optimizers, metrics, datasets, backend, losses
-from tensorflow.python.keras.callbacks import History
 
-MB=1024**2
-GB=1024**3
+MB=1024**2 ; GB=1024**3
 class GPU_Ram: TeslaK80_1Proc= 12*GB; TeslaV100=16*GB; TeslaP100=16*GB; TeslaM60=16*GB; NoGPU=128*MB
 
+class EpochsTime(NamedTuple): index:int ; num_epochs:int ; time_secs:int ; batch_size:int
+class HistoryAndTime(List[EpochsTime]):
+    history:Dict[str, float]
+    def __init__(self, history=None, epochs_times:List[EpochsTime]=None):
+        super(HistoryAndTime, self).__init__()
+        self.history=history
+        if isinstance(epochs_times, list) and len(epochs_times) \
+            and isinstance(epochs_times[0], EpochsTime):
+            self.extend(epochs_times)
+    def num_epochs(self)->int       : return sum([e.num_epochs for e in self])
+    def total_time(self)->float     : return sum([e.time_secs for e in self])
+    def __repr__(self):
+        repr="HistoryAndTime(num_epochs={}, total_time={},latest metrics:{}\n{}"\
+                .format(self.num_epochs(),self.total_time(),
+                        self.history.keys(),
+                        "\n".join(
+                                [ "{}={}".format(k, self.history[k][-1]) for k in self.history]))
+        return repr
 
-def main(gpu_ram= GPU_Ram.TeslaK80_1Proc, epochs=20 ):
+def main(gpu_ram= GPU_Ram.TeslaK80_1Proc, epochs=11 ) -> (models.Sequential, HistoryAndTime):
 
     mnist_4Dense_net= models.Sequential([
             layers.Reshape(target_shape= (28*28,),input_shape=(28, 28)),
@@ -24,29 +39,11 @@ def main(gpu_ram= GPU_Ram.TeslaK80_1Proc, epochs=20 ):
     mnist_4Dense_net.summary()
     ds_train,ds_val=create_mnist_datasets()
     best_batch_size=max_batch_size(gpu_ram,mnist_4Dense_net,default_max=64)
-    run_result= train_and_eval(mnist_4Dense_net,
+    history_and_time= train_and_eval(mnist_4Dense_net,
                                ds_train, ds_val,
                                epochs=epochs,
                                max_batch_size=best_batch_size)
-    print(run_result)
-    return (mnist_4Dense_net, run_result)
-
-
-class EpochsSliceResult(NamedTuple):
-    index:int
-    num_epochs:int
-    time_secs:int
-    loss:float
-    accuracy:float
-    metrics: Dict[str, float]
-
-class RunResults(List[EpochsSliceResult]):
-    def num_epochs(self)->int       : return sum([e.num_epochs for e in self])
-    def total_time(self)->float     : return sum([e.time_secs for e in self])
-    def final_loss(self)->float     : return self[-1].loss
-    def final_accuracy(self)->float : return self[-1].accuracy
-    def final_metrics(self)->Dict[str, float] : return self[-1].metrics
-
+    return (mnist_4Dense_net, history_and_time)
 
 
 @tf.function
@@ -146,7 +143,7 @@ def train_and_eval(model: models.Model,
     try: subprocess.run('nvidia-smi')
     except Exception: pass
 
-    run_result= RunResults()
+    historyandtime= HistoryAndTime()
 
     print('training...')
     for i in range(1, 1+epochs//eval_every_n_epochs):
@@ -161,21 +158,21 @@ def train_and_eval(model: models.Model,
                  validation_data=ds_val.batch(batch_size),
                  validation_freq=eval_every_n_epochs)
         tf.keras.models.save_model(model,save_to_path)
-        val_loss,val_accuracy= model.evaluate(ds_val.batch(batch_size))
         epochs_slice_time = time.time() - start
-        print(epochs_descr,'took {:.1f}sec. Validation loss= {:.2f}, Validation Accuracy= {}%' \
-              .format(epochs_slice_time, val_loss, int(val_accuracy * 100)))
-        epoch_result=EpochsSliceResult(i,
-                                       eval_every_n_epochs,
-                                       epochs_slice_time,
-                                       val_loss,
-                                       val_accuracy,
-                                       history.history)
-        run_result.append(epoch_result)
-        return (model,run_result)
+        epochs_time=EpochsTime(i, eval_every_n_epochs, epochs_slice_time, batch_size)
+        historyandtime.append(epochs_time)
+        historyandtime.history=history.history
+        print(epochs_descr,'took {:.1f}sec. Validation loss= {:.2f}, Validation Accuracy= {}%'\
+                .format( epochs_slice_time,
+                         historyandtime.history['val_loss'][-1],
+                         int(100*historyandtime.history['val_sparse_categorical_accuracy'][-1])))
+        return historyandtime
 
 def warnif(condition:bool, message:str, **kwargs):
     if condition: warn(message,**kwargs)
 
 if __name__ == '__main__':
-    model,run_result=main()
+    model:models.Model
+    history_and_time:HistoryAndTime
+    model, history_and_time=main()
+    print('Timing and Metrics', history_and_time)
