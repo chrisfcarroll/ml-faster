@@ -5,30 +5,33 @@ from functools import reduce
 from numpy import math
 import tensorflow as tf
 from tensorflow.keras import layers, models, optimizers, metrics, datasets, backend, losses
+import matplotlib.pyplot as plt
+import PIL
+from tensorflow.python.keras.callbacks import History
 
 MB=1024**2 ; GB=1024**3
 class GPU_Ram: TeslaK80_1Proc= 12*GB; TeslaV100=16*GB; TeslaP100=16*GB; TeslaM60=16*GB; NoGPU=128*MB
 
-class EpochsTime(NamedTuple): index:int ; num_epochs:int ; time_secs:int ; batch_size:int
-class HistoryAndTime(List[EpochsTime]):
-    history:Dict[str, float]
-    def __init__(self, history=None, epochs_times:List[EpochsTime]=None):
+
+class HistoryAndTimeItem(NamedTuple):
+    index:int ; num_epochs:int ; time_secs:float ; batch_size:int ; history: Dict[str, float]
+
+class HistoryAndTime(List[HistoryAndTimeItem]):
+    def __init__(self):
         super(HistoryAndTime, self).__init__()
-        self.history=history
-        if isinstance(epochs_times, list) and len(epochs_times) \
-            and isinstance(epochs_times[0], EpochsTime):
-            self.extend(epochs_times)
     def num_epochs(self)->int       : return sum([e.num_epochs for e in self])
     def total_time(self)->float     : return sum([e.time_secs for e in self])
     def __repr__(self):
         repr="HistoryAndTime(num_epochs={}, total_time={},latest metrics:{}\n{}"\
-                .format(self.num_epochs(),self.total_time(),
-                        self.history.keys(),
-                        "\n".join(
-                                [ "{}={}".format(k, self.history[k][-1]) for k in self.history]))
+            .format(
+                self.num_epochs(), self.total_time(), self[-1].history.keys(),
+                "\n".join(
+                    [ "{}={}".format(k, hi[k]) for hi in [i.history for i in self] for k in hi.keys() ]
+                ))
         return repr
 
-def main(gpu_ram= GPU_Ram.TeslaK80_1Proc, epochs=11 ) -> (models.Sequential, HistoryAndTime):
+
+def main(gpu_ram= GPU_Ram.TeslaK80_1Proc, epochs=10 ) -> (models.Sequential, HistoryAndTime):
 
     mnist_4Dense_net= models.Sequential([
             layers.Reshape(target_shape= (28*28,),input_shape=(28, 28)),
@@ -40,9 +43,10 @@ def main(gpu_ram= GPU_Ram.TeslaK80_1Proc, epochs=11 ) -> (models.Sequential, His
     ds_train,ds_val=create_mnist_datasets()
     best_batch_size=max_batch_size(gpu_ram,mnist_4Dense_net,default_max=64)
     history_and_time= train_and_eval(mnist_4Dense_net,
-                               ds_train, ds_val,
-                               epochs=epochs,
-                               max_batch_size=best_batch_size)
+                                     ds_train, ds_val,
+                                     num_epochs=epochs,
+                                     validation_freq=1,
+                                     batch_size=best_batch_size)
     return (mnist_4Dense_net, history_and_time)
 
 
@@ -130,11 +134,26 @@ def decay_pow2(current_step, num_steps, start, end=1, curve='exponential'):
         linear=start * (1 - linear_fraction) + end * linear_fraction
         return 0 if linear==0 else 2**int(0.5 + math.log2(linear))
 
+
 def train_and_eval(model: models.Model,
                    ds_train: tf.data.Dataset, ds_val: tf.data.Dataset,
-                   epochs=40, eval_every_n_epochs=10,
+                   num_epochs=30, validation_freq=1,
                    save_to_path='TrainedModel',
-                   max_batch_size=32):
+                   batch_size=32,
+                   batch_size_decay=None):
+    """
+    train and eval the model and return a
+    :param model: the model to train
+    :param ds_train: the training dataset
+    :param ds_val: the validation dataset
+    :param num_epochs: total number of epochs to train
+    :param validation_freq: how often to validate
+    :param save_to_path: path to save the trained model
+    :param batch_size: the batch size to use or, if use batch size decay,
+    the initial batch size
+    :param batch_size_decay: None or 'exponential' or 'linear'
+    :return: a HistoryAndTime containing timings and the Tensorflow history dict
+    """
     print('compiling...')
     model.compile(
             optimizers.Adam(),
@@ -143,36 +162,48 @@ def train_and_eval(model: models.Model,
     try: subprocess.run('nvidia-smi')
     except Exception: pass
 
-    historyandtime= HistoryAndTime()
-
     print('training...')
-    for i in range(1, 1+epochs//eval_every_n_epochs):
-        start=time.time()
-        epoch=1+(i-1)*eval_every_n_epochs
-        batch_size=decay_pow2(epoch - 1, epochs, max_batch_size)
-        ds_batch=ds_train.batch(batch_size)
-        epochs_descr='Epochs {}-{} batch size {} '.format(epoch,epoch+eval_every_n_epochs-1, batch_size)
-        print(epochs_descr)
-        history=model.fit(ds_batch,
-                 epochs=eval_every_n_epochs,
-                 validation_data=ds_val.batch(batch_size),
-                 validation_freq=eval_every_n_epochs)
-        tf.keras.models.save_model(model,save_to_path)
-        epochs_slice_time = time.time() - start
-        epochs_time=EpochsTime(i, eval_every_n_epochs, epochs_slice_time, batch_size)
-        historyandtime.append(epochs_time)
-        historyandtime.history=history.history
-        print(epochs_descr,'took {:.1f}sec. Validation loss= {:.2f}, Validation Accuracy= {}%'\
-                .format( epochs_slice_time,
-                         historyandtime.history['val_loss'][-1],
-                         int(100*historyandtime.history['val_sparse_categorical_accuracy'][-1])))
-        return historyandtime
+    historyandtime= HistoryAndTime()
+    start=time.time()
+    batch_size= batch_size if not batch_size_decay \
+                           else decay_pow2(epoch - 1, num_epochs, batch_size, batch_size_decay)
+    ds_batch=ds_train.batch(batch_size)
+    history=model.fit(ds_batch,
+                      epochs=num_epochs,
+                      validation_data=ds_val.batch(batch_size),
+                      validation_freq=validation_freq)
+    tf.keras.models.save_model(model,save_to_path)
+    elapsed = time.time() - start
+    historytime_item=HistoryAndTimeItem(1, num_epochs, elapsed, batch_size, history.history)
+    historyandtime.append(historytime_item)
+    epochs_descr='Epochs {}-{} batch size {} '.format(1, num_epochs, batch_size)
+    print(epochs_descr,'took {:.1f}sec. Validation loss= {:.2f}, Validation Accuracy= {}%'\
+            .format( historytime_item.time_secs,
+                     historytime_item.history['val_loss'][-1],
+                     int(100*historytime_item.history['val_sparse_categorical_accuracy'][-1])))
+    return historyandtime
 
 def warnif(condition:bool, message:str, **kwargs):
     if condition: warn(message,**kwargs)
 
 if __name__ == '__main__':
     model:models.Model
-    history_and_time:HistoryAndTime
-    model, history_and_time=main()
-    print('Timing and Metrics', history_and_time)
+    historyandtime:HistoryAndTime
+    model, historyandtime=main()
+    print('Timing and Metrics', historyandtime)
+    latest_history = historyandtime[-1].history
+    plt.plot(latest_history['sparse_categorical_accuracy'])
+    plt.plot(latest_history['val_sparse_categorical_accuracy'])
+    plt.title('model accuracy')
+    plt.ylabel('accuracy')
+    plt.xlabel('epoch')
+    plt.legend(['train', 'validation'], loc='upper left')
+    plt.show(block=False)
+    # summarize history for loss
+    plt.plot(latest_history['loss'])
+    plt.plot(latest_history['val_loss'])
+    plt.title('model loss')
+    plt.ylabel('loss')
+    plt.xlabel('epoch')
+    plt.legend(['train', 'validation'], loc='upper left')
+    plt.show(block=False)
