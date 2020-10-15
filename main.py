@@ -7,11 +7,45 @@ from numpy import math
 import tensorflow as tf
 from tensorflow.keras import layers, models, optimizers, metrics, datasets, backend, losses
 import matplotlib.pyplot as plt
-import PIL
-from tensorflow.python.keras.callbacks import History
-
 MB=1024**2 ; GB=1024**3
 class GPU_Ram: TeslaK80_1Proc= 12*GB; TeslaV100=16*GB; TeslaP100=16*GB; TeslaM60=16*GB; NoGPU=128*MB
+class HistoryAndTime: pass
+
+class Mnist4Dense(models.Sequential):
+    def __init__(self):
+        super(Mnist4Dense, self).__init__([
+                layers.Reshape(target_shape=(28 * 28,), input_shape=(28, 28)),
+                layers.Dense(100, activation='relu'),
+                layers.Dense(100, activation='relu'),
+                layers.Dense(10, activation='relu')])
+
+
+def main(
+         model=Mnist4Dense(),
+         what_to_plot=(('Accuracy',
+                        ['sparse_categorical_accuracy', 'val_sparse_categorical_accuracy']),
+                       ('Loss',
+                        ['loss', 'val_loss'])),
+         what_to_plot_legends=(('Validation','^val_'),('Train','.*')),
+         epochs=4,
+         validation_freq=1,
+         save_to_path='TrainedModel',
+         gpu_ram=GPU_Ram.TeslaK80_1Proc) -> (models.Model, HistoryAndTime):
+
+    model.summary()
+    ds_train, ds_val = create_mnist_datasets()
+    best_batch_size = max_batch_size(gpu_ram, model, default_max=64)
+    history_and_time = train_eval_save(model,
+                                       ds_train, ds_val,
+                                       num_epochs=epochs,
+                                       validation_freq=validation_freq,
+                                       batch_size=best_batch_size,
+                                       batch_size_decay=None,
+                                       save_to_path=save_to_path)
+    print('Timing and Metrics', history_and_time)
+    what_to_plot= dict( (title,list) for (title,list) in what_to_plot )
+    plot_metrics(history_and_time[-1].history, what_to_plot,what_to_plot_legends)
+    return (model, history_and_time)
 
 
 class HistoryAndTimeItem(NamedTuple):
@@ -30,25 +64,6 @@ class HistoryAndTime(List[HistoryAndTimeItem]):
                     [ "{}={}".format(k, hi[k]) for hi in [i.history for i in self] for k in hi.keys() ]
                 ))
         return repr
-
-
-def main(gpu_ram= GPU_Ram.TeslaK80_1Proc, epochs=6 ) -> (models.Sequential, HistoryAndTime):
-
-    mnist_4Dense_net= models.Sequential([
-            layers.Reshape(target_shape= (28*28,),input_shape=(28, 28)),
-            layers.Dense(100, activation='relu'),
-            layers.Dense(100, activation='relu'),
-            layers.Dense(10, activation='relu')]
-            )
-    mnist_4Dense_net.summary()
-    ds_train,ds_val=create_mnist_datasets()
-    best_batch_size=max_batch_size(gpu_ram,mnist_4Dense_net,default_max=64)
-    history_and_time= train_and_eval(mnist_4Dense_net,
-                                     ds_train, ds_val,
-                                     num_epochs=epochs,
-                                     validation_freq=1,
-                                     batch_size=best_batch_size)
-    return (mnist_4Dense_net, history_and_time)
 
 
 @tf.function
@@ -140,12 +155,12 @@ def decay_pow2(current_step, num_steps, start, end=1, curve='exponential'):
         return 0 if linear==0 else 2**int(0.5 + math.log2(linear))
 
 
-def train_and_eval(model: models.Model,
-                   ds_train: tf.data.Dataset, ds_val: tf.data.Dataset,
-                   num_epochs, validation_freq=1,
-                   save_to_path='TrainedModel',
-                   batch_size=32,
-                   batch_size_decay=None):
+def train_eval_save(model: models.Model,
+                    ds_train: tf.data.Dataset, ds_val: tf.data.Dataset,
+                    num_epochs, validation_freq=1,
+                    batch_size=32,
+                    batch_size_decay=None,
+                    save_to_path='TrainedModel'):
     """
     train and eval the model and return a
     :param model: the model to train
@@ -170,8 +185,8 @@ def train_and_eval(model: models.Model,
     print('training...')
     historyandtime= HistoryAndTime()
     start=time.time()
-    batch_size= batch_size if not batch_size_decay \
-                           else decay_pow2(epoch - 1, num_epochs, batch_size, batch_size_decay)
+    # batch_size= batch_size if not batch_size_decay \
+    #                        else decay_pow2(epoch - 1, num_epochs, batch_size, batch_size_decay)
     ds_batch=ds_train.batch(batch_size)
     history=model.fit(ds_batch,
                       epochs=num_epochs,
@@ -210,7 +225,10 @@ def plot_metrics(metrics: Dict[str,float],
     of metrics. Usually epoch.
     :param legend_loc: loc parameter for call to plt.legend() on each graph
     """
-    legends_based_on=legends_based_on + (('—','.*'),)
+    if not legends_based_on[-1][1]:
+        legends_based_on[-1][1]='.*'
+    else:
+        legends_based_on=legends_based_on + (('—','.*'),)
     legends=[]
     for key in  what_to_plot:
         for metric_name in what_to_plot[key]:
@@ -228,9 +246,3 @@ if __name__ == '__main__':
     model:models.Model
     historyandtime:HistoryAndTime
     model, historyandtime=main()
-    print('Timing and Metrics', historyandtime)
-    what_to_plot = {
-            'Accuracy': ['sparse_categorical_accuracy', 'val_sparse_categorical_accuracy'],
-            'Loss'     : ['loss', 'val_loss']
-        }
-    plot_metrics(historyandtime[-1].history, what_to_plot)
