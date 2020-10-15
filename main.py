@@ -1,3 +1,4 @@
+import re
 import time, operator, subprocess
 from typing import Tuple, List, NamedTuple, Dict
 from warnings import warn
@@ -31,7 +32,7 @@ class HistoryAndTime(List[HistoryAndTimeItem]):
         return repr
 
 
-def main(gpu_ram= GPU_Ram.TeslaK80_1Proc, epochs=10 ) -> (models.Sequential, HistoryAndTime):
+def main(gpu_ram= GPU_Ram.TeslaK80_1Proc, epochs=6 ) -> (models.Sequential, HistoryAndTime):
 
     mnist_4Dense_net= models.Sequential([
             layers.Reshape(target_shape= (28*28,),input_shape=(28, 28)),
@@ -82,7 +83,8 @@ def max_batch_size(gpu_ram_bytes:int,
     :param default_max: Cut-off beyond which we assume that bigger batches will
     degrade generalisability (e.g. https://arxiv.org/1609.04836)
     :param usable: defaults to 0.95 The fraction of GPU memory that should be considered available
-    for your model and inputs
+    for your model and inputs. Usually less than 100% because of framework, alignment loss,
+    buffers, runtime context etc.
     :param verbose: print calculation
     :return: an integer which is our best guess for the biggest power of 2 batch size that will
     fit into your GPU memory at one go.
@@ -96,12 +98,15 @@ def max_batch_size(gpu_ram_bytes:int,
                         for l in model.layers])
     outputs = reduce(operator.mul,
                      [dim if dim else 1 for dim in model.layers[-1].output_shape])
-    tensors_size= all_inputs + outputs
+    labels = outputs
+    tensors_size= all_inputs + outputs + labels
+    num_ephemeral=tensors_size # Actual value is ‘we have no idea, it depends on implementation’
     num_weights=sum(
             [ a.shape.num_elements()
               for a in model.trainable_weights + model.non_trainable_weights ])
     num_gradients=num_weights
-    num_scalars=tensors_size + num_weights + num_gradients
+    num_scalars=tensors_size + num_weights + num_gradients + num_ephemeral
+
     max_size= int(usable * gpu_ram_bytes / scalar_width / num_scalars)
     best_size= min( 2**int(math.floor(math.log(max_size, 2))), default_max)
     best_size=max(1,best_size)
@@ -137,7 +142,7 @@ def decay_pow2(current_step, num_steps, start, end=1, curve='exponential'):
 
 def train_and_eval(model: models.Model,
                    ds_train: tf.data.Dataset, ds_val: tf.data.Dataset,
-                   num_epochs=30, validation_freq=1,
+                   num_epochs, validation_freq=1,
                    save_to_path='TrainedModel',
                    batch_size=32,
                    batch_size_decay=None):
@@ -186,24 +191,46 @@ def train_and_eval(model: models.Model,
 def warnif(condition:bool, message:str, **kwargs):
     if condition: warn(message,**kwargs)
 
+
+def plot_metrics(metrics: Dict[str,float],
+                 what_to_plot: Dict[str,list],
+                 legends_based_on=(('Validation','^val_'),('Train','.*'),),
+                 plotted_against='epoch',
+                 legend_loc='upper left'):
+    """
+    :param metrics: Assumed to be a tensorflow.keras.callbacks.History.history -
+    i.e. a dict[str,list] where the key is the name of a metric, the list contains float values,
+    and the list is assumed to be index on epoch.
+    :param what_to_plot: One graph will be generated for each key. The list is assumed to
+    contain names matching the keys of metrics.
+    :param legends_based_on: Use this to categorise each metric as (for instance) Training or
+    Validation, based on the metric name matching the given regexes. The default will
+    use legend Validation for any metric name beginning 'val_', and legend 'Train' for all others
+    :param plotted_against: label for the x-axis. The implied meaning of the index in the lists
+    of metrics. Usually epoch.
+    :param legend_loc: loc parameter for call to plt.legend() on each graph
+    """
+    legends_based_on=legends_based_on + (('—','.*'),)
+    legends=[]
+    for key in  what_to_plot:
+        for metric_name in what_to_plot[key]:
+            plt.plot( metrics[metric_name])
+            legend= [ t[0] for t in legends_based_on if re.search(t[1], metric_name)  ][0]
+            legends.append( legend )
+        plt.title(key.capitalize() + " against " + plotted_against)
+        plt.ylabel(key)
+        plt.xlabel(plotted_against)
+        plt.legend(legends, loc='upper left')
+        plt.show(block=False)
+
+
 if __name__ == '__main__':
     model:models.Model
     historyandtime:HistoryAndTime
     model, historyandtime=main()
     print('Timing and Metrics', historyandtime)
-    latest_history = historyandtime[-1].history
-    plt.plot(latest_history['sparse_categorical_accuracy'])
-    plt.plot(latest_history['val_sparse_categorical_accuracy'])
-    plt.title('model accuracy')
-    plt.ylabel('accuracy')
-    plt.xlabel('epoch')
-    plt.legend(['train', 'validation'], loc='upper left')
-    plt.show(block=False)
-    # summarize history for loss
-    plt.plot(latest_history['loss'])
-    plt.plot(latest_history['val_loss'])
-    plt.title('model loss')
-    plt.ylabel('loss')
-    plt.xlabel('epoch')
-    plt.legend(['train', 'validation'], loc='upper left')
-    plt.show(block=False)
+    what_to_plot = {
+            'Accuracy': ['sparse_categorical_accuracy', 'val_sparse_categorical_accuracy'],
+            'Loss'     : ['loss', 'val_loss']
+        }
+    plot_metrics(historyandtime[-1].history, what_to_plot)
