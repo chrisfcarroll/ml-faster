@@ -1,5 +1,7 @@
+import os
 import re
 import time, operator, subprocess
+import datetime
 from typing import Tuple, List, NamedTuple, Dict
 from warnings import warn
 from functools import reduce
@@ -29,7 +31,8 @@ def main(
          what_to_plot_legends=(('Validation','^val_'),('Train','.*')),
          epochs=4,
          validation_freq=1,
-         save_to_path='TrainedModel',
+         save_model_to_path='outputs/TrainedModel',
+         save_metric_plots_to_files=('outputs/metric_plots.svg', 'outputs/metric_plots.png'),
          gpu_ram=GPU_Ram.TeslaK80_1Proc) -> (models.Model, HistoryAndTime):
 
     model.summary()
@@ -41,10 +44,14 @@ def main(
                                        validation_freq=validation_freq,
                                        batch_size=best_batch_size,
                                        batch_size_decay=None,
-                                       save_to_path=save_to_path)
+                                       save_model_to_path=save_model_to_path)
     print('Timing and Metrics', history_and_time)
     what_to_plot= dict( (title,list) for (title,list) in what_to_plot )
-    plot_metrics(history_and_time[-1].history, what_to_plot,what_to_plot_legends)
+    plot_and_save_metrics(
+            history_and_time[-1].history,
+            what_to_plot,
+            what_to_plot_legends,
+            save_to_files=save_metric_plots_to_files)
     return (model, history_and_time)
 
 
@@ -126,9 +133,12 @@ def max_batch_size(gpu_ram_bytes:int,
     best_size= min( 2**int(math.floor(math.log(max_size, 2))), default_max)
     best_size=max(1,best_size)
     if verbose:
-        print('Calculated tensors_size={}, num_weights={}, scalar width={}, '
-              'max batch size for {}GB is {}, best size is {}'\
-              .format(tensors_size,num_weights,scalar_width,gpu_ram_bytes/GB,max_size,best_size))
+        print('Found Inputs+Outputs+Labels: {} scalars. Guess ephemeral is same again. '
+              'Weights & Gradients: {} scalars each. Scalar width={}. '
+              'Given Usable={}, max batch size for {}GB is {}, best size is {}'\
+              .format(tensors_size, num_weights, scalar_width,
+                      int(usable*100), gpu_ram_bytes/GB,
+                      max_size, best_size))
     return best_size
 
 
@@ -160,7 +170,7 @@ def train_eval_save(model: models.Model,
                     num_epochs, validation_freq=1,
                     batch_size=32,
                     batch_size_decay=None,
-                    save_to_path='TrainedModel'):
+                    save_model_to_path='TrainedModel'):
     """
     train and eval the model and return a
     :param model: the model to train
@@ -168,7 +178,7 @@ def train_eval_save(model: models.Model,
     :param ds_val: the validation dataset
     :param num_epochs: total number of epochs to train
     :param validation_freq: how often to validate
-    :param save_to_path: path to save the trained model
+    :param save_model_to_path: path to save the trained model
     :param batch_size: the batch size to use or, if use batch size decay,
     the initial batch size
     :param batch_size_decay: None or 'exponential' or 'linear'
@@ -192,7 +202,7 @@ def train_eval_save(model: models.Model,
                       epochs=num_epochs,
                       validation_data=ds_val.batch(batch_size),
                       validation_freq=validation_freq)
-    tf.keras.models.save_model(model,save_to_path)
+    tf.keras.models.save_model(model, save_model_to_path)
     elapsed = time.time() - start
     historytime_item=HistoryAndTimeItem(1, num_epochs, elapsed, batch_size, history.history)
     historyandtime.append(historytime_item)
@@ -207,11 +217,12 @@ def warnif(condition:bool, message:str, **kwargs):
     if condition: warn(message,**kwargs)
 
 
-def plot_metrics(metrics: Dict[str,float],
-                 what_to_plot: Dict[str,list],
-                 legends_based_on=(('Validation','^val_'),('Train','.*'),),
-                 plotted_against='epoch',
-                 legend_loc='upper left'):
+def plot_and_save_metrics(metrics: Dict[str, float], what_to_plot: Dict[str, list],
+                          legends_based_on=(('Validation', '^val_'), ('Train', '.*'),),
+                          plotted_against='Epoch',
+                          legend_loc='center right',
+                          save_to_files:List[str]=(),
+                          supertitle:str=None):
     """
     :param metrics: Assumed to be a tensorflow.keras.callbacks.History.history -
     i.e. a dict[str,list] where the key is the name of a metric, the list contains float values,
@@ -224,22 +235,34 @@ def plot_metrics(metrics: Dict[str,float],
     :param plotted_against: label for the x-axis. The implied meaning of the index in the lists
     of metrics. Usually epoch.
     :param legend_loc: loc parameter for call to plt.legend() on each graph
+    :param save_to_files: full path to a file to save the figure to. If None, nothing is saved.
     """
     if not legends_based_on[-1][1]:
         legends_based_on[-1][1]='.*'
     else:
         legends_based_on=legends_based_on + (('—','.*'),)
     legends=[]
-    for key in  what_to_plot:
+    num_charts=len(what_to_plot)
+    plt.clf()
+    plt.suptitle(supertitle or "Metrics " + datetime.datetime.now().strftime('%Y-%M-%d-%H-%m'))
+    for i,key in  enumerate( what_to_plot ):
+        plt.subplot(1,num_charts,i+1)
         for metric_name in what_to_plot[key]:
             plt.plot( metrics[metric_name])
             legend= [ t[0] for t in legends_based_on if re.search(t[1], metric_name)  ][0]
             legends.append( legend )
-        plt.title(key.capitalize() + " against " + plotted_against)
+        plt.title( key.capitalize() + " against " + plotted_against)
         plt.ylabel(key)
         plt.xlabel(plotted_against)
-        plt.legend(legends, loc='upper left')
-        plt.show(block=False)
+        plt.legend(legends, loc=legend_loc)
+    try:
+        for file in save_to_files:
+            dir=os.path.dirname(file)
+            os.makedirs(dir, exist_ok=True)
+            plt.savefig(file)
+    except Exception as e:
+        warn("Caught {} trying to save to {}".format(e,save_to_files))
+    plt.show(block=False)
 
 
 if __name__ == '__main__':

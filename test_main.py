@@ -1,7 +1,6 @@
 from unittest import TestCase
 from main import decay_pow2
 
-
 class TestDecay(TestCase):
     def test_linear_decay_0_to_1(self):
         expected_0_to_1_in_10_steps=[
