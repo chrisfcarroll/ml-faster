@@ -11,18 +11,24 @@ import numpy as np
 from numpy import math
 import tensorflow as tf
 from tensorflow.keras import layers, models, optimizers, metrics, datasets, backend, losses
+assert tf.__version__ >='2'; os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 import matplotlib.pyplot as plt
+
+timestamp=int(datetime.datetime.now().timestamp()) % 100_000_000
+tf.random.set_seed(timestamp) ; np.random.seed(timestamp)
 MB=1024**2 ; GB=1024**3
 class GPU_Ram: TeslaK80_1Proc= 12*GB; TeslaV100=16*GB; TeslaP100=16*GB; TeslaM60=16*GB; NoGPU=128*MB
 class HistoryAndTime: pass
 
-
-def main(gpu_ram=GPU_Ram.TeslaK80_1Proc)->(models.Model, HistoryAndTime):
-    print('starting...')
-    m4=Mnist_100_100_10_Dense().compile_with_AdamSparseCategoricalCrossentropySparseCategoricalAccuracy()
-    (m4,h4)= train_eval_save_plot(
-                m4,
-                epochs=2,
+def main(timestamp=timestamp,
+         epochs=4,
+         gpu_ram=GPU_Ram.TeslaK80_1Proc)->List[Tuple[models.Model,HistoryAndTime]]:
+    print('starting with timestamp {} ...'.format(timestamp))
+    m10010010=Mnist_100_100_10_Dense()\
+        .compile_with_AdamSparseCategoricalCrossentropySparseCategoricalAccuracy()
+    h10010010= train_eval_save_plot(
+                m10010010,
+                epochs=epochs,
                 output_folder='outputs',
                 what_to_plot=(('Accuracy',
                                ['sparse_categorical_accuracy','val_sparse_categorical_accuracy']),
@@ -33,10 +39,11 @@ def main(gpu_ram=GPU_Ram.TeslaK80_1Proc)->(models.Model, HistoryAndTime):
                 gpu_ram=gpu_ram)
 
 
-    m1010=Mnist_10_10_Dense().compile_with_AdamSparseCategoricalCrossentropySparseCategoricalAccuracy()
-    (m1010,h1010)= train_eval_save_plot(
+    m1010=Mnist_10_10_Dense()\
+        .compile_with_AdamSparseCategoricalCrossentropySparseCategoricalAccuracy()
+    h1010= train_eval_save_plot(
                 m1010,
-                epochs=2,
+                epochs=epochs,
                 output_folder='outputs',
                 what_to_plot=(('Accuracy',
                                ['sparse_categorical_accuracy','val_sparse_categorical_accuracy']),
@@ -45,16 +52,30 @@ def main(gpu_ram=GPU_Ram.TeslaK80_1Proc)->(models.Model, HistoryAndTime):
                 what_to_plot_legends=( ('Validation', '^val_'), ('Train', '.*') ),
                 save_metric_plots_as=('svg','png'),
                 gpu_ram=gpu_ram)
-    return [ (m4,h4), (m1010, h1010)]
+    m510=Mnist_5_10_Dense()\
+        .compile_with_AdamSparseCategoricalCrossentropySparseCategoricalAccuracy()
+    h510= train_eval_save_plot(
+                m510,
+                epochs=epochs,
+                output_folder='outputs',
+                what_to_plot=(('Accuracy',
+                               ['sparse_categorical_accuracy','val_sparse_categorical_accuracy']),
+                              ('Loss',
+                               ['loss', 'val_loss'])),
+                what_to_plot_legends=( ('Validation', '^val_'), ('Train', '.*') ),
+                save_metric_plots_as=('svg','png'),
+                gpu_ram=gpu_ram)
+    return [ (m10010010,h10010010), (m510, h510),(m1010, h1010)]
 
 
-class Mnist_100_100_10_Dense(models.Sequential):
-    def __init__(self,name='Mnist_100_100_10_Dense'):
-        super(Mnist_100_100_10_Dense, self).__init__([
-                layers.Reshape(target_shape=(28 * 28,), input_shape=(28, 28)),
-                layers.Dense(100, activation='relu'),
-                layers.Dense(100, activation='relu'),
-                layers.Dense(10, activation='relu')], name=name)
+class MnistDense(models.Sequential):
+    def __init__(self, layer_sizes,activation='relu',name=None, timestamp=timestamp):
+        if layer_sizes[-1] != 10:
+            raise 'last layer size for mnist must be 10 but you had {}'.format(layer_sizes[-1])
+        layerlist=[layers.Reshape(target_shape=(28 * 28,), input_shape=(28, 28))]
+        layerlist.extend( layers.Dense(size, activation=activation) for size in layer_sizes )
+        name=name or 'Mnist_{}_{}'.format('_'.join(str(l) for l in layer_sizes),timestamp)
+        super(MnistDense, self).__init__(layerlist, name)
     def compile_with_AdamSparseCategoricalCrossentropySparseCategoricalAccuracy(self):
         self.compile(
                 optimizers.Adam(),
@@ -63,32 +84,16 @@ class Mnist_100_100_10_Dense(models.Sequential):
         return self
 
 
-class Mnist_100_10_Dense(models.Sequential):
-    def __init__(self,name='Mnist_100_10_Dense'):
-        super(Mnist_100_10_Dense, self).__init__([
-                layers.Reshape(target_shape=(28 * 28,), input_shape=(28, 28)),
-                layers.Dense(100, activation='relu'),
-                layers.Dense(10, activation='relu')], name=name)
-    def compile_with_AdamSparseCategoricalCrossentropySparseCategoricalAccuracy(self):
-        self.compile(
-                optimizers.Adam(),
-                loss=losses.SparseCategoricalCrossentropy(from_logits=True),
-                metrics=[metrics.SparseCategoricalAccuracy()])
-        return self
+class Mnist_100_100_10_Dense(MnistDense):
+    def __init__(self): super(Mnist_100_100_10_Dense, self).__init__([100,100,10])
 
 
-class Mnist_10_10_Dense(models.Sequential):
-    def __init__(self,name='Mnist_10_10_Dense'):
-        super(Mnist_10_10_Dense, self).__init__([
-                layers.Reshape(target_shape=(28 * 28,), input_shape=(28, 28)),
-                layers.Dense(10, activation='relu'),
-                layers.Dense(10, activation='relu')], name=name)
-    def compile_with_AdamSparseCategoricalCrossentropySparseCategoricalAccuracy(self):
-        self.compile(
-                optimizers.Adam(),
-                loss=losses.SparseCategoricalCrossentropy(from_logits=True),
-                metrics=[metrics.SparseCategoricalAccuracy()])
-        return self
+class Mnist_10_10_Dense(MnistDense):
+    def __init__(self): super(Mnist_10_10_Dense, self).__init__([10,10])
+
+
+class Mnist_5_10_Dense(MnistDense):
+    def __init__(self): super(Mnist_5_10_Dense, self).__init__([5,10])
 
 
 def train_eval_save_plot(
@@ -102,7 +107,7 @@ def train_eval_save_plot(
                 save_metric_plots_as=('svg','png'),
                 save_name=None,
                 gpu_ram=GPU_Ram.TeslaK80_1Proc
-        ) -> (models.Model, HistoryAndTime):
+        ) -> HistoryAndTime:
 
     model.summary()
     save_name=save_name or model.name
@@ -128,7 +133,7 @@ def train_eval_save_plot(
                 [ os.path.join(output_folder,model.name+'.'+ext)
                   for ext in save_metric_plots_as],
             supertitle=model.name + " at " + datetime.datetime.now().strftime('%y-%m-%d:%H%M'))
-    return (model, history_and_time)
+    return history_and_time
 
 
 class HistoryAndTimeItem(NamedTuple):
@@ -198,8 +203,7 @@ def max_batch_size(gpu_ram_bytes:int,
                         for l in model.layers])
     outputs = reduce(operator.mul,
                      [dim if dim else 1 for dim in model.layers[-1].output_shape])
-    labels = outputs
-    tensors_size= all_inputs + outputs + labels
+    tensors_size= all_inputs + outputs * 3 #outputs, labels, output vs loss gradients
     num_ephemeral=tensors_size # Actual value is ‘we have no idea, it depends on implementation’
     num_weights=sum(
             [ a.shape.num_elements()
@@ -211,7 +215,7 @@ def max_batch_size(gpu_ram_bytes:int,
     best_size= min( 2**int(math.floor(math.log(max_size, 2))), default_max)
     best_size=max(1,best_size)
     if verbose:
-        print('Found Inputs+Outputs+Labels={} scalars. Doubling it for ephemerals.'
+        print('Found Inputs+Outputs*3={} scalars. Doubling it for ephemerals. '
               'Weights,Gradients:{} scalars each. Scalar width={}. '
               'Given Usable={}, max batch size for {}GB is {}, best size is {}'\
               .format(tensors_size, num_weights, scalar_width,
@@ -365,6 +369,5 @@ def load_history_from_json(path):
 
 
 if __name__ == '__main__':
-    model:models.Model
-    historyandtime:HistoryAndTime
-    model, historyandtime=main()
+    models_and_histories:List[Tuple[models.Model,HistoryAndTime]]
+    models_and_histories=main()
