@@ -1,10 +1,13 @@
+import codecs
 import os
 import re
 import time, operator, subprocess
 import datetime
+import json
 from typing import Tuple, List, NamedTuple, Dict
 from warnings import warn
 from functools import reduce
+import numpy as np
 from numpy import math
 import tensorflow as tf
 from tensorflow.keras import layers, models, optimizers, metrics, datasets, backend, losses
@@ -13,29 +16,98 @@ MB=1024**2 ; GB=1024**3
 class GPU_Ram: TeslaK80_1Proc= 12*GB; TeslaV100=16*GB; TeslaP100=16*GB; TeslaM60=16*GB; NoGPU=128*MB
 class HistoryAndTime: pass
 
-class Mnist4Dense(models.Sequential):
-    def __init__(self):
-        super(Mnist4Dense, self).__init__([
+
+def main(gpu_ram=GPU_Ram.TeslaK80_1Proc)->(models.Model, HistoryAndTime):
+    print('starting...')
+    m4=Mnist_100_100_10_Dense().compile_with_AdamSparseCategoricalCrossentropySparseCategoricalAccuracy()
+    (m4,h4)= train_eval_save_plot(
+                m4,
+                epochs=2,
+                output_folder='outputs',
+                what_to_plot=(('Accuracy',
+                               ['sparse_categorical_accuracy','val_sparse_categorical_accuracy']),
+                              ('Loss',
+                               ['loss', 'val_loss'])),
+                what_to_plot_legends=( ('Validation', '^val_'), ('Train', '.*') ),
+                save_metric_plots_as=('svg','png'),
+                gpu_ram=gpu_ram)
+
+
+    m1010=Mnist_10_10_Dense().compile_with_AdamSparseCategoricalCrossentropySparseCategoricalAccuracy()
+    (m1010,h1010)= train_eval_save_plot(
+                m1010,
+                epochs=2,
+                output_folder='outputs',
+                what_to_plot=(('Accuracy',
+                               ['sparse_categorical_accuracy','val_sparse_categorical_accuracy']),
+                              ('Loss',
+                               ['loss', 'val_loss'])),
+                what_to_plot_legends=( ('Validation', '^val_'), ('Train', '.*') ),
+                save_metric_plots_as=('svg','png'),
+                gpu_ram=gpu_ram)
+    return [ (m4,h4), (m1010, h1010)]
+
+
+class Mnist_100_100_10_Dense(models.Sequential):
+    def __init__(self,name='Mnist_100_100_10_Dense'):
+        super(Mnist_100_100_10_Dense, self).__init__([
                 layers.Reshape(target_shape=(28 * 28,), input_shape=(28, 28)),
                 layers.Dense(100, activation='relu'),
                 layers.Dense(100, activation='relu'),
-                layers.Dense(10, activation='relu')])
+                layers.Dense(10, activation='relu')], name=name)
+    def compile_with_AdamSparseCategoricalCrossentropySparseCategoricalAccuracy(self):
+        self.compile(
+                optimizers.Adam(),
+                loss=losses.SparseCategoricalCrossentropy(from_logits=True),
+                metrics=[metrics.SparseCategoricalAccuracy()])
+        return self
 
 
-def main(
-         model=Mnist4Dense(),
-         what_to_plot=(('Accuracy',
-                        ['sparse_categorical_accuracy', 'val_sparse_categorical_accuracy']),
-                       ('Loss',
-                        ['loss', 'val_loss'])),
-         what_to_plot_legends=(('Validation','^val_'),('Train','.*')),
-         epochs=4,
-         validation_freq=1,
-         save_model_to_path='outputs/TrainedModel',
-         save_metric_plots_to_files=('outputs/metric_plots.svg', 'outputs/metric_plots.png'),
-         gpu_ram=GPU_Ram.TeslaK80_1Proc) -> (models.Model, HistoryAndTime):
+class Mnist_100_10_Dense(models.Sequential):
+    def __init__(self,name='Mnist_100_10_Dense'):
+        super(Mnist_100_10_Dense, self).__init__([
+                layers.Reshape(target_shape=(28 * 28,), input_shape=(28, 28)),
+                layers.Dense(100, activation='relu'),
+                layers.Dense(10, activation='relu')], name=name)
+    def compile_with_AdamSparseCategoricalCrossentropySparseCategoricalAccuracy(self):
+        self.compile(
+                optimizers.Adam(),
+                loss=losses.SparseCategoricalCrossentropy(from_logits=True),
+                metrics=[metrics.SparseCategoricalAccuracy()])
+        return self
+
+
+class Mnist_10_10_Dense(models.Sequential):
+    def __init__(self,name='Mnist_10_10_Dense'):
+        super(Mnist_10_10_Dense, self).__init__([
+                layers.Reshape(target_shape=(28 * 28,), input_shape=(28, 28)),
+                layers.Dense(10, activation='relu'),
+                layers.Dense(10, activation='relu')], name=name)
+    def compile_with_AdamSparseCategoricalCrossentropySparseCategoricalAccuracy(self):
+        self.compile(
+                optimizers.Adam(),
+                loss=losses.SparseCategoricalCrossentropy(from_logits=True),
+                metrics=[metrics.SparseCategoricalAccuracy()])
+        return self
+
+
+def train_eval_save_plot(
+                model,
+                epochs=4,
+                validation_freq=1,
+                output_folder='outputs',
+                what_to_plot=(('Accuracy',['accuracy', 'val_accuracy']),
+                           ('Loss',['loss', 'val_loss'])),
+                what_to_plot_legends=(('Validation','^val_'),('Train','.*')),
+                save_metric_plots_as=('svg','png'),
+                save_name=None,
+                gpu_ram=GPU_Ram.TeslaK80_1Proc
+        ) -> (models.Model, HistoryAndTime):
 
     model.summary()
+    save_name=save_name or model.name
+    try: subprocess.run('nvidia-smi')
+    except Exception: pass
     ds_train, ds_val = create_mnist_datasets()
     best_batch_size = max_batch_size(gpu_ram, model, default_max=64)
     history_and_time = train_eval_save(model,
@@ -44,14 +116,18 @@ def main(
                                        validation_freq=validation_freq,
                                        batch_size=best_batch_size,
                                        batch_size_decay=None,
-                                       save_model_to_path=save_model_to_path)
+                                       output_folder=output_folder,
+                                       save_name=save_name)
     print('Timing and Metrics', history_and_time)
-    what_to_plot= dict( (title,list) for (title,list) in what_to_plot )
+    what_to_plot = dict((title, list) for (title, list) in what_to_plot)
     plot_and_save_metrics(
             history_and_time[-1].history,
             what_to_plot,
             what_to_plot_legends,
-            save_to_files=save_metric_plots_to_files)
+            save_to_files=
+                [ os.path.join(output_folder,model.name+'.'+ext)
+                  for ext in save_metric_plots_as],
+            supertitle=model.name + " at " + datetime.datetime.now().strftime('%y-%m-%d:%H%M'))
     return (model, history_and_time)
 
 
@@ -59,8 +135,10 @@ class HistoryAndTimeItem(NamedTuple):
     index:int ; num_epochs:int ; time_secs:float ; batch_size:int ; history: Dict[str, float]
 
 class HistoryAndTime(List[HistoryAndTimeItem]):
-    def __init__(self):
+    name : str
+    def __init__(self, name):
         super(HistoryAndTime, self).__init__()
+        self.name=name or datetime.datetime.now().strftime('%Y%m%d-%H%M%S')
     def num_epochs(self)->int       : return sum([e.num_epochs for e in self])
     def total_time(self)->float     : return sum([e.time_secs for e in self])
     def __repr__(self):
@@ -93,8 +171,8 @@ def max_batch_size(gpu_ram_bytes:int,
                    default_max:int=32,
                    usable=0.95, verbose=True)->int:
     """
-    See https://www.microsoft.com/en-us/research/uploads/prod/2020/05/dnnmem.pdf for
-    more complications than are dealt with here; and for a proposal for a tool to do away
+    See table 2 in https://www.microsoft.com/en-us/research/uploads/prod/2020/05/dnnmem.pdf for
+    more categories of usage than are dealt with here; and for a proposal for a tool to do away
     with this estimation.
     See https://arxiv.org/1609.04836 for the suggestion that anything over 32 is probably
     bad anyway.
@@ -133,8 +211,8 @@ def max_batch_size(gpu_ram_bytes:int,
     best_size= min( 2**int(math.floor(math.log(max_size, 2))), default_max)
     best_size=max(1,best_size)
     if verbose:
-        print('Found Inputs+Outputs+Labels: {} scalars. Guess ephemeral is same again. '
-              'Weights & Gradients: {} scalars each. Scalar width={}. '
+        print('Found Inputs+Outputs+Labels={} scalars. Doubling it for ephemerals.'
+              'Weights,Gradients:{} scalars each. Scalar width={}. '
               'Given Usable={}, max batch size for {}GB is {}, best size is {}'\
               .format(tensors_size, num_weights, scalar_width,
                       int(usable*100), gpu_ram_bytes/GB,
@@ -165,14 +243,13 @@ def decay_pow2(current_step, num_steps, start, end=1, curve='exponential'):
         return 0 if linear==0 else 2**int(0.5 + math.log2(linear))
 
 
-def train_eval_save(model: models.Model,
-                    ds_train: tf.data.Dataset, ds_val: tf.data.Dataset,
-                    num_epochs, validation_freq=1,
-                    batch_size=32,
-                    batch_size_decay=None,
-                    save_model_to_path='TrainedModel'):
+def train_eval_save(model: models.Model, ds_train: tf.data.Dataset, ds_val: tf.data.Dataset,
+                    num_epochs, validation_freq=1, batch_size=32, batch_size_decay=None,
+                    output_folder='outputs',
+                    save_name:str=None):
     """
     train and eval the model and return a
+    :param save_history_to_file:
     :param model: the model to train
     :param ds_train: the training dataset
     :param ds_val: the validation dataset
@@ -184,16 +261,9 @@ def train_eval_save(model: models.Model,
     :param batch_size_decay: None or 'exponential' or 'linear'
     :return: a HistoryAndTime containing timings and the Tensorflow history dict
     """
-    print('compiling...')
-    model.compile(
-            optimizers.Adam(),
-            loss=losses.SparseCategoricalCrossentropy(from_logits=True),
-            metrics=[metrics.SparseCategoricalAccuracy()])
-    try: subprocess.run('nvidia-smi')
-    except Exception: pass
-
     print('training...')
-    historyandtime= HistoryAndTime()
+    save_name=save_name or model.name
+    historyandtime= HistoryAndTime(save_name)
     start=time.time()
     # batch_size= batch_size if not batch_size_decay \
     #                        else decay_pow2(epoch - 1, num_epochs, batch_size, batch_size_decay)
@@ -202,16 +272,18 @@ def train_eval_save(model: models.Model,
                       epochs=num_epochs,
                       validation_data=ds_val.batch(batch_size),
                       validation_freq=validation_freq)
-    tf.keras.models.save_model(model, save_model_to_path)
+    tf.keras.models.save_model(model, os.path.join(output_folder,save_name))
     elapsed = time.time() - start
     historytime_item=HistoryAndTimeItem(1, num_epochs, elapsed, batch_size, history.history)
     historyandtime.append(historytime_item)
+    save_history_as_json(os.path.join(output_folder,save_name+'.json'),historyandtime)
     epochs_descr='Epochs {}-{} batch size {} '.format(1, num_epochs, batch_size)
     print(epochs_descr,'took {:.1f}sec. Validation loss= {:.2f}, Validation Accuracy= {}%'\
             .format( historytime_item.time_secs,
                      historytime_item.history['val_loss'][-1],
                      int(100*historytime_item.history['val_sparse_categorical_accuracy'][-1])))
     return historyandtime
+
 
 def warnif(condition:bool, message:str, **kwargs):
     if condition: warn(message,**kwargs)
@@ -244,7 +316,7 @@ def plot_and_save_metrics(metrics: Dict[str, float], what_to_plot: Dict[str, lis
     legends=[]
     num_charts=len(what_to_plot)
     plt.clf()
-    plt.suptitle(supertitle or "Metrics " + datetime.datetime.now().strftime('%Y-%M-%d-%H-%m'))
+    plt.suptitle(supertitle or "Metrics " + datetime.datetime.now().strftime('%Y%m%d-%H%M'))
     for i,key in  enumerate( what_to_plot ):
         plt.subplot(1,num_charts,i+1)
         for metric_name in what_to_plot[key]:
@@ -263,6 +335,33 @@ def plot_and_save_metrics(metrics: Dict[str, float], what_to_plot: Dict[str, lis
     except Exception as e:
         warn("Caught {} trying to save to {}".format(e,save_to_files))
     plt.show(block=False)
+
+
+def save_history_as_json(path,history_and_time:HistoryAndTime):
+    def safe_history(history:Dict[str,float]):
+        safe={}
+        for key in list(history.keys()):
+            safe[key]=history[key]
+            if type(history[key]) == np.ndarray:
+                safe[key] = history[key].tolist()
+            elif type(history[key]) == list:
+               if  type(history[key][0]) == np.float64:
+                   safe[key] = list(map(float, history[key]))
+        return safe
+    saveable=[ HistoryAndTimeItem(index=e.index,
+                               batch_size=e.batch_size,
+                               time_secs=e.time_secs,
+                               num_epochs=e.num_epochs,
+                               history=safe_history(e.history))
+                for e in history_and_time]
+    with codecs.open(path, 'w', encoding='utf-8') as file:
+        json.dump(saveable, file, indent=2)
+
+
+def load_history_from_json(path):
+    with codecs.open(path, 'r', encoding='utf-8') as file:
+        n = json.loads(file.read())
+    return n
 
 
 if __name__ == '__main__':
